@@ -141,6 +141,14 @@ typedef struct{
 Mail<message_t,16> outMessages;
 Queue<void, 8> inCharQ;
     
+//function to add messages to queue
+void putMessage(uint8_t code, uint32_t data){
+    message_t *pMessage = outMessages.alloc();
+    pMessage->code = code;
+    pMessage->data = data;
+    outMessages.put(pMessage);
+}     
+
 //create Thread
 Thread commOutT;
 Thread commIn;   
@@ -149,15 +157,29 @@ Thread motorCtrlT (osPriorityNormal,1024);
 void motorCtrlTick(){
     motorCtrlT.signal_set(0x1);
 }
-int32_t lastPosition;
+
+int32_t lastPosition;//USE TIMER INSTEAF OF ASSUMING *10
+uint8_t motorCount;
+Timer timer;
 void motorCtrlFn(){
     Ticker motorCtrlTicker;
     motorCtrlTicker.attach_us(&motorCtrlTick,100000);
+    timer.start();
     while(1){
         motorCtrlT.signal_wait(0x1);
-        int32_t diff = motorPosition - lastPosition;
-        diff = diff * 10;
-        
+        timer.stop();
+        int32_t timeDiff = timer.read_us()
+        int32_t speed = motorPosition - lastPosition;
+        lastPosition = motorPosition;
+        speed = speed * (1000000/timeDiff);
+        motorCount++;
+        if(motorCount == 10) {
+            putMessage(5, speed);
+            motorCount = 0;
+        }
+           
+        timer.reset();
+        timer.start(); 
     }
 }
 
@@ -219,16 +241,7 @@ void commOutFn(){
         }
         outMessages.free(pMessage);
     }
-}       
-  
-    
-//function to add messages to queue
-void putMessage(uint8_t code, uint32_t data){
-    message_t *pMessage = outMessages.alloc();
-    pMessage->code = code;
-    pMessage->data = data;
-    outMessages.put(pMessage);
-}  
+}        
 
 Ticker interval;
 void print_rate() {
@@ -255,9 +268,11 @@ int main() {
     *nonce = 0;
     *key = 0;
     
+    pc.printf("started");
     commOutT.start(commOutFn);
-    commIn.start(commInFn);
-    
+    //commIn.start(commInFn);
+    motorCtrlT.start(motorCtrlFn);
+   
     //Run the motor synchronisation
     pc.printf("Rotor origin: %x\n\r",orState);
     motorISR();
