@@ -1,6 +1,7 @@
 #include "mbed.h"
 #include "SHA256.h"
 #include "Crypto.h"
+#include "rtos.h"
 //Photointerrupter input pins
 #define I1pin D2
 #define I2pin D11
@@ -70,7 +71,6 @@ DigitalOut L2H(L2Hpin);
 DigitalOut L3L(L3Lpin);
 DigitalOut L3H(L3Hpin);
     
-    
 //Set a given drive state
 void motorOut(int8_t driveState){
     
@@ -109,14 +109,94 @@ int8_t motorHome() {
     return readRotorState();
 }
 const int8_t orState = motorHome();
+const int8_t foundNonce=111;
 
 //new func
 void ISR(){
     motorOut((readRotorState()-orState+lead+6)%6);
-    }
+}
+
+RawSerial pc(SERIAL_TX, SERIAL_RX);   
+
+typedef struct{
+    uint8_t code;
+    uint32_t data;
+    } message_t ;
     
-Serial pc(SERIAL_TX, SERIAL_RX);
+Mail<message_t,16> outMessages;
+Queue<void, 8> inCharQ;
+    
+//create Thread
+Thread commOutT;
+Thread commIn;   
+volatile uint64_t newKey;
+Mutex newKey_mutex;
+
+void serialISR(){
+    uint8_t newChar = pc.getc();
+    inCharQ.put((void*)newChar);
+}
+
+//take messages from the queue and print them on the serial port
+void commInFn(){
+    char command[20];
+    //char *pcommand = command;
+    int index = 0;
+    pc.attach(&serialISR);
+    while(1) {
+        osEvent newEvent = inCharQ.get();
+        uint8_t newChar = (uint8_t)newEvent.value.p;
+        
+        if(index<20) {
+            if(newChar == '\r') {
+                command[index] = '\0';
+                index = 0;
+                if(command[0] == 'K') {
+                    newKey_mutex.lock();
+                    sscanf(command, "K%x", &newKey); //Decode the command
+                    pc.printf("%016X\n\r", newKey);
+                    //*key = newKey;
+                    newKey_mutex.unlock();
+                }
+                /*else {
+                    pc.printf(command);
+                }*/
+            }
+            else {
+                command[index] = newChar;
+                index ++;
+            }
+        }
+    }
+}
+
+//take messages from the queue and print them on the serial port
+void commOutFn(){
+    while(1) {
+        osEvent newEvent = outMessages.get();
+        message_t *pMessage = (message_t*)newEvent.value.p;
+        if(pMessage->code == 1) {
+            pc.printf("FOUND ONE\n\r");
+        }
+        else {
+            pc.printf("Message %d with data 0x%016x\n\r",
+                pMessage->code,pMessage->data);
+        }
+        outMessages.free(pMessage);
+    }
+}       
+  
+    
+//function to add messages to queue
+void putMessage(uint8_t code, uint32_t data){
+    message_t *pMessage = outMessages.alloc();
+    pMessage->code = code;
+    pMessage->data = data;
+    outMessages.put(pMessage);
+}    
+
 Ticker interval;
+
 void print_rate() {
     pc.printf("%i\n\r", count);
     count = 0;      
@@ -130,25 +210,28 @@ int main() {
     I1.fall(&ISR);
     I2.fall(&ISR);
     I3.fall(&ISR);
-    interval.attach(&print_rate, 2);
+    //interval.attach(&print_rate, 2);
     
     *nonce = 0;
     *key = 0;
-    //Initialise the serial port
-    pc.printf("HelloWorld\n\r");
+    
+    commOutT.start(commOutFn);
+    commIn.start(commInFn);
     
     //Run the motor synchronisation
     pc.printf("Rotor origin: %x\n\r",orState);
     ISR();
-    
-    unsigned long int i = 0;
+    unsigned long int i = 1;
     while(1){
+        //putMessage(2, *key);
+        *key = newKey;
         SHA256::computeHash(hash, (uint8_t*)sequence, 64);
         if(hash[0]==0 && hash[1]==0){
-            pc.printf("FOUND ONE!!!\n\r");
-            pc.printf("%016X\n\r", *nonce);
+            putMessage(1, 0);
+            putMessage(foundNonce, *nonce);
+            putMessage(foundNonce, *key);
         }
-        *nonce = + i;
+        *nonce = i;
         i++;
         count++;
     }
