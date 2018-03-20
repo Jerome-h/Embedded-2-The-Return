@@ -50,10 +50,11 @@ const int8_t stateMap[] = {0x07,0x05,0x03,0x04,0x01,0x00,0x02,0x07};
 //const int8_t stateMap[] = {0x07,0x01,0x03,0x02,0x05,0x00,0x04,0x07}; //Alternative if phase order of input or drive is reversed
 
 //Phase lead to make motor spin
-const int8_t lead = 2;  //2 for forwards, -2 for backwards
+int8_t lead = 2;  //2 for forwards, -2 for backwards
 
 //unsigned long int count = 0;
-uint32_t torque = 500;
+uint32_t motorPower = 500;
+uint32_t speed = 40;
 
 
 //Status LED
@@ -75,8 +76,6 @@ DigitalOut L3H(L3Hpin);
 
 //Set a given drive state
 void motorOut(int8_t driveState){
-     
-    
     //Lookup the output byte from the drive state.
     int8_t driveOut = driveTable[driveState & 0x07];
       
@@ -89,11 +88,11 @@ void motorOut(int8_t driveState){
     if (~driveOut & 0x20) L3H = 1;
     
     //Then turn on
-    if (driveOut & 0x01) L1L.pulsewidth_us(torque);
+    if (driveOut & 0x01) L1L.pulsewidth_us(motorPower);
     if (driveOut & 0x02) L1H = 0;
-    if (driveOut & 0x04) L2L.pulsewidth_us(torque);
+    if (driveOut & 0x04) L2L.pulsewidth_us(motorPower);
     if (driveOut & 0x08) L2H = 0;
-    if (driveOut & 0x10) L3L.pulsewidth_us(torque);
+    if (driveOut & 0x10) L3L.pulsewidth_us(motorPower);
     if (driveOut & 0x20) L3H = 0;
     }
     
@@ -105,23 +104,24 @@ inline int8_t readRotorState(){
 //Basic synchronisation routine    
 int8_t motorHome() {
     //Put the motor in drive state 0 and wait for it to stabilise
-    torque = 1000;
+    motorPower = 1000;
     motorOut(0);
     wait(2.0);
     
     //Get the rotor state
     return readRotorState();
 }
-const int8_t orState = motorHome();
+int8_t orState = 0;
 const int8_t foundNonce=111;
 
 /*//new func
 void ISR(){
     motorOut((readRotorState()-orState+lead+6)%6);
 }*/
-
+int32_t ys;
 int32_t motorPosition;
 void motorISR() {
+    
     static int8_t oldRotorState;
     int8_t rotorState = readRotorState();
     motorOut((rotorState-orState+lead+6)%6);
@@ -150,8 +150,8 @@ void putMessage(uint8_t code, uint32_t data){
 }     
 
 //create Thread
-Thread commOutT;
-Thread commIn;   
+Thread commOutT (osPriorityNormal,1024);
+Thread commIn (osPriorityNormal,1024);   
 Thread motorCtrlT (osPriorityNormal,1024);
 
 void motorCtrlTick(){
@@ -168,18 +168,33 @@ void motorCtrlFn(){
     while(1){
         motorCtrlT.signal_wait(0x1);
         timer.stop();
-        int32_t timeDiff = timer.read_us()
-        int32_t speed = motorPosition - lastPosition;
+        int32_t timeDiff = timer.read_us();
+        int32_t actSpeed = motorPosition - lastPosition;
         lastPosition = motorPosition;
-        speed = speed * (1000000/timeDiff);
-        motorCount++;
-        if(motorCount == 10) {
-            putMessage(5, speed);
-            motorCount = 0;
-        }
-           
         timer.reset();
         timer.start(); 
+        actSpeed = actSpeed * (1000000/timeDiff);
+        actSpeed = actSpeed/6;
+        motorCount++;
+        if(motorCount == 10) {
+            putMessage(5, actSpeed);
+            putMessage(99, speed);
+            motorCount = 0;
+        }
+        
+        ys = 100*(speed - abs(actSpeed));
+        if(ys<0) {
+            lead=-2;
+            ys = -ys;   
+        }
+        else {
+         lead = +2;    
+        }
+        if(ys>1000) {
+         ys = 1000;
+        }
+    
+        motorPower = ys;
     }
 }
 
@@ -193,8 +208,8 @@ void serialISR(){
 
 //take messages from the queue and print them on the serial port
 void commInFn(){
-    char command[20];
-    //char *pcommand = command;
+    char command[20];   //CHECK THIS VALUE
+    
     int index = 0;
     pc.attach(&serialISR);
     while(1) {
@@ -211,12 +226,13 @@ void commInFn(){
                     pc.printf("%016X\n\r", newKey);
                     newKey_mutex.unlock();
                 }
-                if(command[0] == 'T') {
+                else if(command[0] == 'T') {
                     //tmp
-                    sscanf(command, "T%d", &torque); //Decode the command
-                    //pc.printf(torque);
-                    pc.printf("%d\n\r", torque+1);
-                    //pc.printf();
+                    sscanf(command, "T%d", &motorPower); //Decode the command
+                }
+                else if(command[0] == 'V') {
+                    //tmp
+                    sscanf(command, "V%d", &speed); //Decode the command
                 }
             }
             else {
@@ -247,7 +263,7 @@ Ticker interval;
 void print_rate() {
     //pc.printf("%i\n\r", count);
     //count = 0;      
-    pc.printf("%d\n\r", torque);
+    pc.printf("%d\n\r", motorPower);
 }
     
 //Main
@@ -257,21 +273,26 @@ int main() {
     L2L.period_us(us);
     L3L.period_us(us);
     
+    orState = motorHome();
+    
     I1.rise(&motorISR);
     I2.rise(&motorISR);
     I3.rise(&motorISR);
     I1.fall(&motorISR);
     I2.fall(&motorISR);
     I3.fall(&motorISR);
-    interval.attach(&print_rate, 2);
-    
+    //interval.attach(&print_rate, 2);
+    pc.printf("%d\n\r", motorPower);
     *nonce = 0;
     *key = 0;
     
     pc.printf("started");
     commOutT.start(commOutFn);
-    //commIn.start(commInFn);
+    pc.printf("1");
+    commIn.start(commInFn);
+    pc.printf("2");
     motorCtrlT.start(motorCtrlFn);
+    pc.printf("3");
    
     //Run the motor synchronisation
     pc.printf("Rotor origin: %x\n\r",orState);
