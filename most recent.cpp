@@ -32,11 +32,18 @@ uint8_t hash[32];
 
 
 //message meanings
-#define found_nonce     1 
-#define show_nonce      2
-#define show_key        3
-#define show_speed      5
-#define show_actspeed   55
+#define found_nonce         1 
+#define show_nonce          2
+#define show_key            3
+#define required_positions  4
+#define show_speed          5
+#define required_positions  6
+#define motor_position      7
+#define er                  8
+#define or_state            9
+#definemotor_power          10
+#define new_key             11
+#define show_actspeed       55
 
 
 //Mapping from sequential drive states to motor phase outputs
@@ -164,7 +171,7 @@ void motorCtrlTick(){
     motorCtrlT.signal_set(0x1);
 }
 
-int32_t lastPosition;//USE TIMER INSTEAF OF ASSUMING *10
+int32_t lastPosition;
 uint8_t motorCount;
 Timer timer;
 void motorCtrlFn(){
@@ -205,9 +212,12 @@ void motorCtrlFn(){
         
         if(Er<0) ys = -ys;
         
-        pc.printf("%d\n\r", requiredPositions);
-        pc.printf("%d\n\r", motorPosition);
-        pc.printf("%d\n\r\n\r\n\r", Er);
+   //     pc.printf("%d\n\r", requiredPositions);  
+        putMessages(4, requiredPositions)// change to COMMOUT
+   //     pc.printf("%d\n\r", motorPosition); // change to COMMOUT
+        putMessages(7, motorPosition)
+    //    pc.printf("%d\n\r\n\r\n\r", Er);    // change to COMMOUT
+        putMessages(8, Er)
         
         yr = kp2*Er + kd*(Er-lastEr);   
     
@@ -254,7 +264,8 @@ void commInFn(){
                 if(command[0] == 'K') {
                     newKey_mutex.lock();
                     sscanf(command, "K%x", &newKey); //Decode the command
-                    pc.printf("%016X\n\r", newKey);
+               //     pc.printf("%016X\n\r", newKey);
+                    putMessages(11, newKey)
                     newKey_mutex.unlock();
                 }
                 else if(command[0] == 'T') {
@@ -308,7 +319,8 @@ Ticker interval;
 void print_rate() {
     //pc.printf("%i\n\r", count);
     //count = 0;      
-    pc.printf("%d\n\r", motorPower);
+//    pc.printf("%d\n\r", motorPower); // change to COMMOUT        
+    putMessages(11, motorPower)
 }
     
 //Main
@@ -335,7 +347,7 @@ int main() {
     motorCtrlT.start(motorCtrlFn);
    
     //Run the motor synchronisation
-    pc.printf("Rotor origin: %x\n\r",orState);
+    putMessages(9, orState)
     motorISR();
     unsigned long int i = 1;
     while(1){
